@@ -36,7 +36,7 @@ set(FREERTOS_KERNEL_PATH /Users/mykytasiryk/university/real-time-operating-syste
 include(pico_sdk_import.cmake)
 include(/Users/mykytasiryk/university/real-time-operating-systems/FreeRTOS-Kernel/portable/ThirdParty/GCC/RP2040/FreeRTOS_Kernel_import.cmake)
 
-project(personal-project C CXX ASM)
+project(main C CXX ASM)
 
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
@@ -77,17 +77,17 @@ include_directories(./lib/SGP40)
 include_directories(./lib/QMI8658)
 
 # Add executable. Default name is the project name, version 0.1
-add_executable(personal-project personal-project.c )
+add_executable(main main.c )
 
-pico_set_program_name(personal-project "personal-project")
-pico_set_program_version(personal-project "0.1")
+pico_set_program_name(main "main")
+pico_set_program_version(main "0.1")
 
 # Modify the below lines to enable/disable output over UART/USB
-pico_enable_stdio_uart(personal-project 0)
-pico_enable_stdio_usb(personal-project 1)
+pico_enable_stdio_uart(main 0)
+pico_enable_stdio_usb(main 1)
 
 # Add the standard include files to the build (app target)
-target_include_directories(personal-project PRIVATE
+target_include_directories(main PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/config       # <= ensure your app also sees lwipopts.h
     ${FREERTOS_KERNEL_PATH}/include 
@@ -95,7 +95,7 @@ target_include_directories(personal-project PRIVATE
 )
 
 # Link libraries (single consolidated call)
-target_link_libraries(personal-project
+target_link_libraries(main
   pico_stdlib
   hardware_spi
   hardware_i2c
@@ -119,4 +119,4 @@ target_link_libraries(personal-project
   pico_cyw43_arch_lwip_sys_freertos
 )
 
-pico_add_extra_outputs(personal-project)
+pico_add_extra_outputs(main)
