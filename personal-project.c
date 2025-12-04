@@ -28,24 +28,6 @@
 #include "lwip/errno.h"
 #include "lwip/inet.h"
 
-/* mbedTLS (no desktop net_sockets!) */
-#include "mbedtls/ssl.h"
-#include "mbedtls/entropy.h"
-#include "mbedtls/ctr_drbg.h"
-#include "mbedtls/x509_crt.h"
-#include "mbedtls/error.h"
-
-/* Map “net_* failed” error codes for builds without MBEDTLS_NET_C.
- * Values match mbedTLS 2.28.x so error strings remain meaningful via mbedtls_strerror().
- */
-#ifndef MBEDTLS_ERR_NET_SEND_FAILED
-#define MBEDTLS_ERR_NET_SEND_FAILED    -0x004E
-#endif
-
-#ifndef MBEDTLS_ERR_NET_RECV_FAILED
-#define MBEDTLS_ERR_NET_RECV_FAILED    -0x004C
-#endif
-
 
 /* ====================================================================
    --- Wi-Fi / API constants (use real values in your setup) ---
@@ -54,7 +36,7 @@
    ==================================================================== */
 static const char WIFI_SSID[]     = "test-wifi";
 static const char WIFI_PASSWORD[] = "test-password";
-static const char API_HOST[]      = "your-api-host.com";
+static const char API_HOST[]      = "192.168.1.100";  // Change to your local PC's IP address
 static const char API_PATH[]      = "/your/api/path";
 
 /* Sensor Defines */
@@ -78,39 +60,6 @@ typedef struct {
 
 /* Global sensor data */
 static SensorData_t g_sensor_data = {0};
-
-/* ====================================================================
-   --- TLS helpers: BIO callbacks using lwIP sockets (blocking) ---
-   ==================================================================== */
-
-typedef struct {
-    int fd; // lwIP socket fd
-} tls_net_ctx_t;
-
-static int tls_net_send(void *ctx, const unsigned char *buf, size_t len) {
-    tls_net_ctx_t *c = (tls_net_ctx_t *)ctx;
-    int ret = lwip_write(c->fd, buf, (int)len);
-    if (ret < 0) {
-        // Map EWOULDBLOCK/AGAIN to WANT_WRITE if using non-blocking.
-        if (errno == EWOULDBLOCK || errno == EAGAIN) return MBEDTLS_ERR_SSL_WANT_WRITE;
-        return MBEDTLS_ERR_NET_SEND_FAILED;
-    }
-    return ret;
-}
-
-static int tls_net_recv(void *ctx, unsigned char *buf, size_t len) {
-    tls_net_ctx_t *c = (tls_net_ctx_t *)ctx;
-    int ret = lwip_read(c->fd, buf, (int)len);
-    if (ret < 0) {
-        if (errno == EWOULDBLOCK || errno == EAGAIN) return MBEDTLS_ERR_SSL_WANT_READ;
-        return MBEDTLS_ERR_NET_RECV_FAILED;
-    }
-    if (ret == 0) {
-        // Peer closed connection
-        return 0; 
-    }
-    return ret;
-}
 
 /* Resolve host and connect TCP socket (IPv4/IPv6) */
 static int tcp_connect_lwip(const char *host, const char *port) {
@@ -143,92 +92,28 @@ static int tcp_connect_lwip(const char *host, const char *port) {
     return fd;
 }
 
-/* Optional: pretty-print mbedTLS error */
-static void print_mbedtls_err(const char *where, int err) {
-    char buf[128];
-    mbedtls_strerror(err, buf, sizeof(buf));
-    printf("%s: -0x%04x (%s)\n", where, (unsigned)(-err), buf);
-}
-
 /* ====================================================================
-   --- HTTPS POST using mbedTLS over lwIP socket (no mbedtls_net_*) ---
+   --- Simple HTTP POST using plain TCP socket ---
    ==================================================================== */
-static void https_post(const char *host, const char *path, const char *json_payload) {
-    int ret = 0;
-    tls_net_ctx_t net_ctx = { .fd = -1 };
-
-    mbedtls_ssl_context ssl;
-    mbedtls_ssl_config conf;
-    mbedtls_x509_crt cacert;
-    mbedtls_ctr_drbg_context ctr_drbg;
-    mbedtls_entropy_context entropy;
-
+static void http_post(const char *host, const char *path, const char *json_payload) {
+    int fd = -1;
     char request_buf[1024];
     char response_buf[1024];
-    const char *pers = "pico_w_https_client";
 
-    printf("Starting HTTPS POST to %s%s\n", host, path);
+    printf("Starting HTTP POST to %s%s\n", host, path);
 
-    // Init TLS objects
-    mbedtls_ssl_init(&ssl);
-    mbedtls_ssl_config_init(&conf);
-    mbedtls_x509_crt_init(&cacert);
-    mbedtls_ctr_drbg_init(&ctr_drbg);
-    mbedtls_entropy_init(&entropy);
-
-    // Seed DRBG
-    if ((ret = mbedtls_ctr_drbg_seed(&ctr_drbg, mbedtls_entropy_func, &entropy,
-                                     (const unsigned char *)pers, strlen(pers))) != 0) {
-        print_mbedtls_err("ctr_drbg_seed", ret);
-        goto cleanup;
-    }
-
-    // Load CA certs if you have them; otherwise keep VERIFY_OPTIONAL for now.
-    // Example: mbedtls_x509_crt_parse(&cacert, ca_pem, ca_pem_len);
-
-    if ((ret = mbedtls_ssl_config_defaults(&conf,
-                                           MBEDTLS_SSL_IS_CLIENT,
-                                           MBEDTLS_SSL_TRANSPORT_STREAM,
-                                           MBEDTLS_SSL_PRESET_DEFAULT)) != 0) {
-        print_mbedtls_err("ssl_config_defaults", ret);
-        goto cleanup;
-    }
-
-    // For first bring-up you can do OPTIONAL; for production use REQUIRED and real CA.
-    mbedtls_ssl_conf_authmode(&conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
-    mbedtls_ssl_conf_ca_chain(&conf, &cacert, NULL);
-    mbedtls_ssl_conf_rng(&conf, mbedtls_ctr_drbg_random, &ctr_drbg);
-
-    if ((ret = mbedtls_ssl_setup(&ssl, &conf)) != 0) {
-        print_mbedtls_err("ssl_setup", ret);
-        goto cleanup;
-    }
-
-    if ((ret = mbedtls_ssl_set_hostname(&ssl, host)) != 0) {
-        print_mbedtls_err("ssl_set_hostname", ret);
-        goto cleanup;
-    }
-
-    // TCP connect
-    net_ctx.fd = tcp_connect_lwip(host, "443");
-    if (net_ctx.fd < 0) goto cleanup;
-
-    // BIO: plug our send/recv
-    mbedtls_ssl_set_bio(&ssl, &net_ctx, tls_net_send, tls_net_recv, NULL);
-
-    // Handshake
-    while ((ret = mbedtls_ssl_handshake(&ssl)) != 0) {
-        if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
-            print_mbedtls_err("ssl_handshake", ret);
-            goto cleanup;
-        }
+    // TCP connect to port 8000 (local development)
+    fd = tcp_connect_lwip(host, "8000");
+    if (fd < 0) {
+        printf("Failed to connect to %s:8000\n", host);
+        return;
     }
 
     // Build HTTP request
     const int payload_len = (int)strlen(json_payload);
     int n = snprintf(request_buf, sizeof(request_buf),
                      "POST %s HTTP/1.1\r\n"
-                     "Host: %s\r\n"
+                     "Host: %s:8000\r\n"
                      "Content-Type: application/json\r\n"
                      "Content-Length: %d\r\n"
                      "Connection: close\r\n"
@@ -237,33 +122,31 @@ static void https_post(const char *host, const char *path, const char *json_payl
                      path, host, payload_len, json_payload);
     if (n < 0 || n >= (int)sizeof(request_buf)) {
         printf("Request too big\n");
-        goto cleanup;
+        lwip_close(fd);
+        return;
     }
 
-    // Send
-    ret = mbedtls_ssl_write(&ssl, (const unsigned char *)request_buf, (size_t)n);
-    if (ret <= 0) {
-        print_mbedtls_err("ssl_write", ret);
-        goto cleanup;
+    // Send HTTP request
+    int sent = lwip_write(fd, request_buf, n);
+    if (sent < 0) {
+        printf("Failed to send request: %d\n", errno);
+        lwip_close(fd);
+        return;
     }
+    printf("Sent %d bytes\n", sent);
 
-    // Read (single chunk)
+    // Read response (single chunk)
     memset(response_buf, 0, sizeof(response_buf));
-    ret = mbedtls_ssl_read(&ssl, (unsigned char *)response_buf, sizeof(response_buf) - 1);
-    if (ret <= 0) {
-        if (ret == 0) printf("... Server closed connection\n");
-        else print_mbedtls_err("ssl_read", ret);
+    int received = lwip_read(fd, response_buf, sizeof(response_buf) - 1);
+    if (received < 0) {
+        printf("Failed to read response: %d\n", errno);
+    } else if (received == 0) {
+        printf("... Server closed connection\n");
     } else {
-        printf("... Received %d bytes:\n--- (BEGIN RESPONSE) ---\n%s\n--- (END RESPONSE) ---\n", ret, response_buf);
+        printf("... Received %d bytes:\n--- (BEGIN RESPONSE) ---\n%s\n--- (END RESPONSE) ---\n", received, response_buf);
     }
 
-cleanup:
-    if (net_ctx.fd >= 0) lwip_close(net_ctx.fd);
-    mbedtls_ssl_free(&ssl);
-    mbedtls_ssl_config_free(&conf);
-    mbedtls_x509_crt_free(&cacert);
-    mbedtls_ctr_drbg_free(&ctr_drbg);
-    mbedtls_entropy_free(&entropy);
+    lwip_close(fd);
 }
 
 /* ====================================================================
@@ -386,7 +269,7 @@ void vAPISendTask(void *pvParameters) {
                  local_data.gyro[0], local_data.gyro[1], local_data.gyro[2]);
 
         printf("Sending JSON to API:\n%s\n", json_buffer);
-        https_post(API_HOST, API_PATH, json_buffer);
+        http_post(API_HOST, API_PATH, json_buffer);
     }
 }
 

@@ -58,12 +58,6 @@ add_compile_definitions(
 )
 # ------------------------------------------------------------------------------------
 
-# Use our local mbedTLS config instead of the SDK-generated one
-set(PICO_MBEDTLS_CONFIG_FILE
-    ${CMAKE_CURRENT_LIST_DIR}/config/mbedtls_config.h
-    CACHE STRING "Custom mbedTLS config" FORCE
-)
-
 # Add Subdirectory
 add_subdirectory(./lib/Config)
 add_subdirectory(./lib/OLED)
@@ -84,9 +78,6 @@ include_directories(./lib/QMI8658)
 
 # Add executable. Default name is the project name, version 0.1
 add_executable(personal-project personal-project.c )
-target_include_directories(personal-project PRIVATE
-    ${CMAKE_CURRENT_BINARY_DIR}/generated/pico_mbedtls
-)
 
 pico_set_program_name(personal-project "personal-project")
 pico_set_program_version(personal-project "0.1")
@@ -102,8 +93,6 @@ target_include_directories(personal-project PRIVATE
     ${FREERTOS_KERNEL_PATH}/include 
     ${FREERTOS_KERNEL_PATH}/portable/ThirdParty/GCC/RP2040 
 )
-
-target_sources(personal-project PRIVATE src/mbedtls_time_alt.c)
 
 # Link libraries (single consolidated call)
 target_link_libraries(personal-project
@@ -128,7 +117,6 @@ target_link_libraries(personal-project
 
   # CYW43 + lwIP arch for FreeRTOS (NO_SYS=0)
   pico_cyw43_arch_lwip_sys_freertos
-  pico_mbedtls
 )
 
 pico_add_extra_outputs(personal-project)
